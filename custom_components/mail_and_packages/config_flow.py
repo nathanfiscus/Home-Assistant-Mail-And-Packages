@@ -1,6 +1,7 @@
 """Adds config flow for Mail and Packages."""
 
 import logging
+import secrets
 import ssl
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,7 @@ import homeassistant.helpers.config_validation as cv
 import voluptuous as vol
 from aioimaplib import AioImapException
 from homeassistant import config_entries
+from homeassistant.components.http import HomeAssistantView
 from homeassistant.const import (
     CONF_HOST,
     CONF_PASSWORD,
@@ -16,9 +18,12 @@ from homeassistant.const import (
     CONF_RESOURCES,
     CONF_USERNAME,
 )
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 
 from .const import (
+    AUTH_METHOD_OAUTH,
+    AUTH_METHOD_PASSWORD,
+    CONF_ACCESS_TOKEN_EXPIRY,
     CONF_ALLOW_EXTERNAL,
     CONF_ALLOW_FORWARDED_EMAILS,
     CONF_AMAZON_CUSTOM_IMG,
@@ -26,9 +31,14 @@ from .const import (
     CONF_AMAZON_DAYS,
     CONF_AMAZON_DOMAIN,
     CONF_AMAZON_FWDS,
+    CONF_AUTH_METHOD,
+    CONF_CLIENT_ID,
+    CONF_CLIENT_SECRET,
     CONF_CUSTOM_IMG,
     CONF_CUSTOM_IMG_FILE,
     CONF_DURATION,
+    CONF_ENCRYPTED_ACCESS_TOKEN,
+    CONF_ENCRYPTED_REFRESH_TOKEN,
     CONF_FEDEX_CUSTOM_IMG,
     CONF_FEDEX_CUSTOM_IMG_FILE,
     CONF_FOLDER,
@@ -40,11 +50,14 @@ from .const import (
     CONF_IMAGE_SECURITY,
     CONF_IMAP_SECURITY,
     CONF_IMAP_TIMEOUT,
+    CONF_OAUTH_PROVIDER,
     CONF_PATH,
     CONF_SCAN_INTERVAL,
     CONF_STORAGE,
+    CONF_TOKEN_SALT,
     CONF_UPS_CUSTOM_IMG,
     CONF_UPS_CUSTOM_IMG_FILE,
+    CONF_USER_EMAIL,
     CONF_VERIFY_SSL,
     CONF_WALMART_CUSTOM_IMG,
     CONF_WALMART_CUSTOM_IMG_FILE,
@@ -76,6 +89,8 @@ from .const import (
     DEFAULT_WALMART_CUSTOM_IMG,
     DEFAULT_WALMART_CUSTOM_IMG_FILE,
     DOMAIN,
+    OAUTH_CALLBACK_PATH,
+    OAUTH_PROVIDERS,
 )
 from .helpers import (
     InvalidAuth,
@@ -94,6 +109,112 @@ AMAZON_EMAIL_ERROR = (
     "Amazon domain found in email: %s, this may cause errors when searching emails."
 )
 FORWARDED_EMAIL_ERROR = "A service domain was found in email: %s, this may cause errors when searching emails."  # pylint: disable=line-too-long
+
+# Flows waiting for an OAuth callback keyed by *state* token.
+_OAUTH_FLOW_CALLBACKS: dict[str, Any] = {}
+
+
+class OAuthCallbackView(HomeAssistantView):
+    """View that handles the OAuth2 redirect callback from the provider.
+
+    When the user completes the OAuth authorisation the provider redirects to
+    this endpoint with a ``code`` and ``state`` query parameter.  The ``state``
+    value is used to look up the waiting config flow so that it can be resumed.
+    """
+
+    url = OAUTH_CALLBACK_PATH
+    name = "auth:external:callback:mail_and_packages"
+    requires_auth = False
+
+    async def get(self, request):  # type: ignore[override]
+        """Handle the OAuth callback GET request."""
+        from aiohttp.web import HTTPFound, Response  # noqa: PLC0415
+
+        state = request.query.get("state")
+        code = request.query.get("code")
+        error = request.query.get("error")
+
+        if not state or state not in _OAUTH_FLOW_CALLBACKS:
+            _LOGGER.warning("Received OAuth callback with unknown state: %s", state)
+            return Response(
+                text="Unknown OAuth state. Please restart the configuration flow.",
+                content_type="text/plain",
+                status=400,
+            )
+
+        future = _OAUTH_FLOW_CALLBACKS.pop(state)
+
+        if error:
+            _LOGGER.error("OAuth error from provider: %s", error)
+            future.set_result({"error": error})
+        elif code:
+            future.set_result({"code": code})
+        else:
+            future.set_result({"error": "no_code"})
+
+        return Response(
+            text=(
+                "Authentication received! You can close this window and return to"
+                " Home Assistant."
+            ),
+            content_type="text/plain",
+        )
+
+
+def _get_schema_auth_method(user_input: dict | None, default_dict: dict) -> vol.Schema:
+    """Schema for auth method selection step."""
+    if user_input is None:
+        user_input = {}
+
+    def _get_default(key: str, fallback_default: Any = None) -> Any:
+        return user_input.get(key, default_dict.get(key, fallback_default))
+
+    return vol.Schema(
+        {
+            vol.Required(
+                CONF_AUTH_METHOD,
+                default=_get_default(CONF_AUTH_METHOD, AUTH_METHOD_PASSWORD),
+            ): vol.In([AUTH_METHOD_PASSWORD, AUTH_METHOD_OAUTH]),
+        }
+    )
+
+
+def _get_schema_oauth_credentials(
+    user_input: dict | None, default_dict: dict
+) -> vol.Schema:
+    """Schema for OAuth credentials step."""
+    if user_input is None:
+        user_input = {}
+
+    def _get_default(key: str, fallback_default: Any = None) -> Any:
+        return user_input.get(key, default_dict.get(key, fallback_default))
+
+    return vol.Schema(
+        {
+            vol.Required(
+                CONF_OAUTH_PROVIDER,
+                default=_get_default(CONF_OAUTH_PROVIDER, "gmail"),
+            ): vol.In(list(OAUTH_PROVIDERS.keys())),
+            vol.Required(
+                CONF_CLIENT_ID,
+                default=_get_default(CONF_CLIENT_ID, ""),
+            ): cv.string,
+            vol.Required(
+                CONF_CLIENT_SECRET,
+                default=_get_default(CONF_CLIENT_SECRET, ""),
+            ): cv.string,
+            vol.Required(CONF_HOST, default=_get_default(CONF_HOST, "")): cv.string,
+            vol.Required(
+                CONF_PORT, default=_get_default(CONF_PORT, 993)
+            ): cv.port,
+            vol.Required(
+                CONF_IMAP_SECURITY, default=_get_default(CONF_IMAP_SECURITY, "SSL")
+            ): vol.In(IMAP_SECURITY),
+            vol.Optional(
+                CONF_VERIFY_SSL, default=_get_default(CONF_VERIFY_SSL, False)
+            ): cv.boolean,
+        }
+    )
 
 
 async def _check_amazon_forwards(forwards: str, domain: str) -> tuple:
@@ -271,11 +392,12 @@ async def _get_mailboxes(
     pwd: str,
     security: str,
     verify: bool,
+    access_token: str | None = None,
 ) -> list:
     """Get list of mailbox folders from mail server."""
     _LOGGER.debug("Getting mailboxes, login...")
     try:
-        account = await login(hass, host, port, user, pwd, security, verify)
+        account = await login(hass, host, port, user, pwd, security, verify, access_token)
 
     except (TimeoutError, AioImapException, ConnectionRefusedError) as err:
         _LOGGER.error("Unable to connect: %s", err)
@@ -327,12 +449,18 @@ def _get_schema_step_1(user_input: list, default_dict: list) -> Any:
 
     return vol.Schema(
         {
-            vol.Required(CONF_HOST, default=_get_default(CONF_HOST)): cv.string,
-            vol.Required(CONF_PORT, default=_get_default(CONF_PORT, 993)): cv.port,
-            vol.Required(CONF_USERNAME, default=_get_default(CONF_USERNAME)): cv.string,
-            vol.Required(CONF_PASSWORD, default=_get_default(CONF_PASSWORD)): cv.string,
-            vol.Required(
-                CONF_IMAP_SECURITY, default=_get_default(CONF_IMAP_SECURITY)
+            # auth_method has NO default so it is not injected into existing
+            # password-based submissions (keeps backwards compatibility with
+            # existing config-entry data that does not contain this key).
+            vol.Optional(CONF_AUTH_METHOD): vol.In(
+                [AUTH_METHOD_PASSWORD, AUTH_METHOD_OAUTH]
+            ),
+            vol.Optional(CONF_HOST, default=_get_default(CONF_HOST, "")): cv.string,
+            vol.Optional(CONF_PORT, default=_get_default(CONF_PORT, 993)): cv.port,
+            vol.Optional(CONF_USERNAME, default=_get_default(CONF_USERNAME, "")): cv.string,
+            vol.Optional(CONF_PASSWORD, default=_get_default(CONF_PASSWORD, "")): cv.string,
+            vol.Optional(
+                CONF_IMAP_SECURITY, default=_get_default(CONF_IMAP_SECURITY, "SSL")
             ): vol.In(IMAP_SECURITY),
             vol.Optional(
                 CONF_VERIFY_SSL, default=_get_default(CONF_VERIFY_SSL, False)
@@ -352,6 +480,15 @@ async def _get_schema_step_2(
         """Get default value for key."""
         return user_input.get(key, default_dict.get(key, fallback_default))
 
+    # For OAuth configs, resolve the access_token for the mailbox listing
+    access_token: str | None = None
+    imap_user = data.get(CONF_USERNAME)
+    if data.get(CONF_AUTH_METHOD) == AUTH_METHOD_OAUTH:
+        from .helpers import _resolve_oauth_access_token  # noqa: PLC0415
+
+        access_token = await _resolve_oauth_access_token(hass, dict(data))
+        imap_user = data.get(CONF_USER_EMAIL, imap_user)
+
     return vol.Schema(
         {
             vol.Required(CONF_FOLDER, default=_get_default(CONF_FOLDER)): vol.In(
@@ -359,10 +496,11 @@ async def _get_schema_step_2(
                     hass,
                     data[CONF_HOST],
                     data[CONF_PORT],
-                    data[CONF_USERNAME],
-                    data[CONF_PASSWORD],
+                    imap_user,
+                    data.get(CONF_PASSWORD, ""),
                     data[CONF_IMAP_SECURITY],
                     data[CONF_VERIFY_SSL],
+                    access_token,
                 )
             ),
             vol.Required(
@@ -598,28 +736,52 @@ class MailAndPackagesFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         self._entry = {}
         self._data = {}
         self._errors = {}
+        self._oauth_state: str | None = None
 
     async def async_step_user(self, user_input=None):
-        """Handle a flow initialized by the user."""
+        """Handle a flow initialized by the user.
+
+        The step shows a combined form with an optional auth_method field and
+        IMAP credentials.  When auth_method is ``"oauth"`` the OAuth
+        credentials step is shown next.  When auth_method is ``"password"`` or
+        absent (the common case for password-based configs) the existing IMAP
+        login validation runs unchanged so that no existing tests break.
+        """
         self._errors = {}
 
         if user_input is not None:
-            self._data.update(user_input)
-            self._errors = await _validate_login(
-                self.hass,
-                user_input,
-            )
-            if self._errors == {}:
-                return await self.async_step_config_2()
+            auth_method = user_input.get(CONF_AUTH_METHOD, AUTH_METHOD_PASSWORD)
+
+            if auth_method == AUTH_METHOD_OAUTH:
+                self._data[CONF_AUTH_METHOD] = AUTH_METHOD_OAUTH
+                return await self.async_step_oauth_credentials()
+
+            # Password auth – validate that required IMAP fields are present
+            missing = [
+                f
+                for f in (CONF_HOST, CONF_USERNAME, CONF_PASSWORD)
+                if not user_input.get(f)
+            ]
+            for field in missing:
+                self._errors[field] = "required"
+
+            if not self._errors:
+                self._data.update(user_input)
+                # Remove auth_method from data so existing config entries are
+                # not polluted with this key when it was not explicitly set.
+                self._data.pop(CONF_AUTH_METHOD, None)
+                self._errors = await _validate_login(self.hass, user_input)
+                if self._errors == {}:
+                    return await self.async_step_config_2()
 
             return await self._show_config_form(user_input)
 
         return await self._show_config_form(user_input)
 
     async def _show_config_form(self, user_input):
-        """Show the configuration form to edit configuration data."""
-        # Defaults
+        """Show the IMAP connection / auth method configuration form."""
         defaults = {
+            CONF_AUTH_METHOD: AUTH_METHOD_PASSWORD,
             CONF_PORT: DEFAULT_PORT,
             CONF_IMAP_SECURITY: "SSL",
             CONF_VERIFY_SSL: False,
@@ -630,6 +792,156 @@ class MailAndPackagesFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             data_schema=_get_schema_step_1(user_input, defaults),
             errors=self._errors,
         )
+
+    # ---------------------------------------------------------------------------
+    # OAuth config steps
+    # ---------------------------------------------------------------------------
+
+    async def async_step_oauth_credentials(self, user_input=None):
+        """Collect OAuth client credentials and IMAP server settings."""
+        self._errors = {}
+
+        if user_input is not None:
+            # Validate that host is provided
+            if not user_input.get(CONF_HOST):
+                self._errors[CONF_HOST] = "required"
+            if not user_input.get(CONF_CLIENT_ID):
+                self._errors[CONF_CLIENT_ID] = "required"
+            if not user_input.get(CONF_CLIENT_SECRET):
+                self._errors[CONF_CLIENT_SECRET] = "required"
+
+            if not self._errors:
+                self._data.update(user_input)
+                return await self.async_step_oauth_authorize()
+
+        return self.async_show_form(
+            step_id="oauth_credentials",
+            data_schema=_get_schema_oauth_credentials(user_input, {}),
+            errors=self._errors,
+        )
+
+    async def async_step_oauth_authorize(self, user_input=None):
+        """Generate an OAuth authorization URL and wait for the callback."""
+        import asyncio  # noqa: PLC0415
+
+        from .oauth_handler import (  # noqa: PLC0415
+            exchange_code_for_token,
+            get_oauth_url,
+            get_user_email,
+        )
+
+        provider = self._data[CONF_OAUTH_PROVIDER]
+        client_id = self._data[CONF_CLIENT_ID]
+        client_secret = self._data[CONF_CLIENT_SECRET]
+
+        # Build the redirect URI using this HA instance's external/internal URL
+        try:
+            redirect_uri = self._build_redirect_uri()
+        except RuntimeError as err:
+            _LOGGER.error("Cannot determine redirect URI: %s", err)
+            self._errors["base"] = "cannot_connect"
+            return self.async_show_form(
+                step_id="oauth_credentials",
+                data_schema=_get_schema_oauth_credentials(None, self._data),
+                errors=self._errors,
+            )
+
+        # Register OAuth callback view (idempotent)
+        self.hass.http.register_view(OAuthCallbackView)
+
+        # Generate a random state to prevent CSRF
+        state = secrets.token_hex(16)
+        self._oauth_state = state
+
+        # Create a future that the callback view will resolve
+        loop = self.hass.loop
+        future: asyncio.Future = loop.create_future()
+        _OAUTH_FLOW_CALLBACKS[state] = future
+
+        auth_url = get_oauth_url(provider, client_id, redirect_uri, state)
+        _LOGGER.debug("OAuth authorization URL: %s", auth_url)
+
+        # Wait for the callback (up to 5 minutes)
+        try:
+            result = await asyncio.wait_for(future, timeout=300)
+        except asyncio.TimeoutError:
+            _OAUTH_FLOW_CALLBACKS.pop(state, None)
+            self._errors["base"] = "oauth_timeout"
+            return self.async_show_form(
+                step_id="oauth_credentials",
+                data_schema=_get_schema_oauth_credentials(None, self._data),
+                errors=self._errors,
+            )
+
+        if "error" in result:
+            self._errors["base"] = "oauth_error"
+            _LOGGER.error("OAuth authorization error: %s", result["error"])
+            return self.async_show_form(
+                step_id="oauth_credentials",
+                data_schema=_get_schema_oauth_credentials(None, self._data),
+                errors=self._errors,
+            )
+
+        code = result["code"]
+
+        # Exchange code for tokens
+        try:
+            token_data = await exchange_code_for_token(
+                provider, client_id, client_secret, code, redirect_uri
+            )
+        except ValueError as err:
+            _LOGGER.error("Token exchange failed: %s", err)
+            self._errors["base"] = "oauth_token_error"
+            return self.async_show_form(
+                step_id="oauth_credentials",
+                data_schema=_get_schema_oauth_credentials(None, self._data),
+                errors=self._errors,
+            )
+
+        # Fetch user email
+        try:
+            user_email = await get_user_email(provider, token_data["access_token"])
+        except ValueError as err:
+            _LOGGER.error("Failed to fetch user email: %s", err)
+            self._errors["base"] = "oauth_user_info_error"
+            return self.async_show_form(
+                step_id="oauth_credentials",
+                data_schema=_get_schema_oauth_credentials(None, self._data),
+                errors=self._errors,
+            )
+
+        # Encrypt tokens
+        from .crypto import Cryptographer  # noqa: PLC0415
+
+        crypto = Cryptographer(client_secret)
+        self._data[CONF_USER_EMAIL] = user_email
+        self._data[CONF_ENCRYPTED_ACCESS_TOKEN] = crypto.encrypt(
+            token_data["access_token"]
+        )
+        self._data[CONF_TOKEN_SALT] = crypto.salt_hex
+        self._data[CONF_ACCESS_TOKEN_EXPIRY] = token_data["expires_at"]
+
+        if "refresh_token" in token_data:
+            self._data[CONF_ENCRYPTED_REFRESH_TOKEN] = crypto.encrypt(
+                token_data["refresh_token"]
+            )
+
+        # Do NOT store the plain-text access token – it lives only in memory
+        # Proceed to step 2 (folder/resources/etc.)
+        return await self.async_step_config_2()
+
+    def _build_redirect_uri(self) -> str:
+        """Build the OAuth callback redirect URI for this HA instance."""
+        # Prefer the external URL if configured; fall back to internal URL
+        base_url = (
+            self.hass.config.external_url
+            or self.hass.config.internal_url
+        )
+        if not base_url:
+            raise RuntimeError(
+                "No external or internal URL configured for Home Assistant"
+            )
+        return f"{base_url.rstrip('/')}{OAUTH_CALLBACK_PATH}"
 
     async def async_step_config_2(self, user_input=None):
         """Configure form step 2."""

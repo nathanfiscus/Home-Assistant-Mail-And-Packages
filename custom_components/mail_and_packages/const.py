@@ -117,6 +117,47 @@ DEFAULT_STORAGE = "custom_components/mail_and_packages/images/"
 DEFAULT_ALLOW_FORWARDED_EMAILS = False
 DEFAULT_FORWARDED_EMAILS = "(none)"
 
+# OAuth Authentication
+CONF_AUTH_METHOD = "auth_method"
+CONF_OAUTH_PROVIDER = "provider"
+CONF_CLIENT_ID = "client_id"
+CONF_CLIENT_SECRET = "client_secret"
+CONF_ENCRYPTED_ACCESS_TOKEN = "encrypted_access_token"
+CONF_ENCRYPTED_REFRESH_TOKEN = "encrypted_refresh_token"
+CONF_ACCESS_TOKEN_EXPIRY = "access_token_expiry"
+CONF_TOKEN_SALT = "token_salt"
+CONF_USER_EMAIL = "user_email"
+
+AUTH_METHOD_PASSWORD = "password"
+AUTH_METHOD_OAUTH = "oauth"
+
+OAUTH_PROVIDERS: Final[dict] = {
+    "gmail": {
+        "auth_url": "https://accounts.google.com/o/oauth2/auth",
+        "userinfo_url": "https://www.googleapis.com/oauth2/v1/userinfo",
+        "imap_host": "imap.gmail.com",
+        "imap_port": 993,
+    },
+    "outlook": {
+        "auth_url": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+        "userinfo_url": "https://graph.microsoft.com/v1.0/me",
+        "imap_host": "outlook.office365.com",
+        "imap_port": 993,
+    },
+}
+
+OAUTH_TOKEN_URL: Final[dict] = {
+    "gmail": "https://oauth2.googleapis.com/token",
+    "outlook": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+}
+
+OAUTH_SCOPE: Final[dict] = {
+    "gmail": "https://mail.google.com/ https://www.googleapis.com/auth/userinfo.email",
+    "outlook": "https://outlook.office.com/IMAP.AccessAsUser.All offline_access openid profile email",
+}
+
+OAUTH_CALLBACK_PATH = "/auth/external/callback/mail_and_packages"
+
 # Amazon
 AMAZON_DOMAINS = [
     "amazon.com",
