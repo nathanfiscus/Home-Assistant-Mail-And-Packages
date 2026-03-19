@@ -1,7 +1,9 @@
 {
   "config": {
     "abort": {
-      "single_instance_allowed": "Only a single configuration of Mail and Packages is allowed."
+      "single_instance_allowed": "Only a single configuration of Mail and Packages is allowed.",
+      "token_request_failed": "Failed to exchange OAuth authorization code for tokens.",
+      "unsupported_provider": "The selected OAuth provider is not supported."
     },
     "error": {
       "communication": "Unable to connect or login to the mail server. Please check the log for details.",
@@ -10,10 +12,18 @@
       "amazon_domain": "Invalid forwarding email address.",
       "file_not_found": "Image file not found",
       "scan_too_low": "Scan interval too low (minimum 5)",
-      "timeout_too_low": "IMAP timeout too low (minumim 10)"
+      "timeout_too_low": "IMAP timeout too low (minumim 10)",
+      "invalid_url": "Invalid OAuth callback URL or missing authorization code."
     },
     "step": {
       "user": {
+        "data": {
+          "auth_method": "Authentication Method"
+        },
+        "description": "Choose how Mail and Packages should authenticate with your mail server.",
+        "title": "Mail and Packages — Authentication"
+      },
+      "password": {
         "data": {
           "host": "Host",
           "password": "Password",
@@ -22,6 +32,23 @@
         },
         "description": "Please enter the connection information of your mail server.",
         "title": "Mail and Packages (Step 1 of 2)"
+      },
+      "oauth": {
+        "data": {
+          "client_id": "OAuth Client ID",
+          "client_secret": "OAuth Client Secret",
+          "provider": "Email Provider"
+        },
+        "description": "Enter your OAuth application credentials.\n\n**Gmail:** Create credentials at [Google Cloud Console](https://console.cloud.google.com/apis/credentials). Enable the Gmail API and create an OAuth 2.0 client ID.\n\n**Outlook:** Register your application at [Azure Portal](https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps). Add IMAP.AccessAsUser.All permission.",
+        "title": "Mail and Packages — OAuth Credentials"
+      },
+      "authorize": {
+        "data": {
+          "auth_url_display": "Authorization URL (click to open)",
+          "url": "Paste the full callback URL here"
+        },
+        "description": "1. Open the following URL in your browser to authorize access:\n\n`{auth_url}`\n\n2. After authorizing, your browser will redirect to a callback page. Copy the full URL from the browser address bar and paste it below.",
+        "title": "Mail and Packages — OAuth Authorization"
       },
       "config_2": {
         "data": {

@@ -50,6 +50,25 @@ CONF_GENERATE_MP4 = "generate_mp4"
 CONF_AMAZON_FWDS = "amazon_fwds"
 CONF_AMAZON_DAYS = "amazon_days"
 
+# OAuth Authentication Configuration
+CONF_AUTH_METHOD = "auth_method"
+CONF_CLIENT_ID = "client_id"
+CONF_CLIENT_SECRET = "client_secret"
+CONF_OAUTH_PROVIDER = "provider"
+CONF_ENCRYPTED_ACCESS_TOKEN = "encrypted_access_token"
+CONF_ENCRYPTED_REFRESH_TOKEN = "encrypted_refresh_token"
+CONF_ACCESS_TOKEN_EXPIRY = "access_token_expiry"
+CONF_TOKEN_SALT = "token_salt"
+CONF_TOKEN_ITERATIONS = "token_iterations"
+
+# Authentication method values
+AUTH_METHOD_PASSWORD = "password"
+AUTH_METHOD_OAUTH = "oauth"
+
+# OAuth providers
+OAUTH_PROVIDER_GMAIL = "gmail"
+OAUTH_PROVIDER_OUTLOOK = "outlook"
+
 # Defaults
 DEFAULT_CAMERA_NAME = "Mail USPS Camera"
 DEFAULT_NAME = "Mail And Packages"

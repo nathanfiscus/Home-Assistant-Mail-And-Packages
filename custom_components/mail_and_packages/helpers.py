@@ -63,15 +63,26 @@ from .const import (
     ATTR_SUBJECT,
     ATTR_TRACKING,
     ATTR_USPS_MAIL,
+    AUTH_METHOD_OAUTH,
+    AUTH_METHOD_PASSWORD,
+    CONF_ACCESS_TOKEN_EXPIRY,
     CONF_ALLOW_EXTERNAL,
     CONF_AMAZON_DAYS,
     CONF_AMAZON_FWDS,
+    CONF_AUTH_METHOD,
+    CONF_CLIENT_ID,
+    CONF_CLIENT_SECRET,
     CONF_CUSTOM_IMG,
     CONF_CUSTOM_IMG_FILE,
     CONF_DURATION,
+    CONF_ENCRYPTED_ACCESS_TOKEN,
+    CONF_ENCRYPTED_REFRESH_TOKEN,
     CONF_FOLDER,
     CONF_GENERATE_MP4,
+    CONF_OAUTH_PROVIDER,
     CONF_PATH,
+    CONF_TOKEN_ITERATIONS,
+    CONF_TOKEN_SALT,
     DEFAULT_AMAZON_DAYS,
     OVERLAY,
     SENSOR_DATA,
@@ -104,10 +115,17 @@ async def _check_ffmpeg() -> bool:
     return which("ffmpeg")
 
 
-async def _test_login(host: str, port: int, user: str, pwd: str) -> bool:
+async def _test_login(
+    host: str,
+    port: int,
+    user: str,
+    pwd: Optional[str] = None,
+    access_token: Optional[str] = None,
+) -> bool:
     """Test IMAP login to specified server.
 
-    Returns success boolean
+    Supports both password-based and XOAUTH2 token-based authentication.
+    Returns success boolean.
     """
     # Attempt to catch invalid mail server hosts
     try:
@@ -117,7 +135,11 @@ async def _test_login(host: str, port: int, user: str, pwd: str) -> bool:
         return False
     # Validate we can login to mail server
     try:
-        account.login(user, pwd)
+        if access_token:
+            auth_string = f"user={user}\x01auth=Bearer {access_token}\x01\x01"
+            account.authenticate("XOAUTH2", lambda x: auth_string)
+        else:
+            account.login(user, pwd)
         return True
     except Exception as err:
         _LOGGER.error("Error logging into IMAP Server: %s", str(err))
@@ -138,6 +160,105 @@ def default_image_path(
     return "custom_components/mail_and_packages/images/"
 
 
+def _get_oauth_access_token(hass: HomeAssistant, config: ConfigEntry) -> Optional[str]:
+    """Get a valid OAuth access token, refreshing if necessary.
+
+    Returns the decrypted access token or None on failure.
+    """
+    import time as _time
+    from .crypto import Cryptographer
+    from .oauth_handler import is_token_expired, refresh_access_token
+
+    encrypted_access_token = config.get(CONF_ENCRYPTED_ACCESS_TOKEN)
+    encrypted_refresh_token = config.get(CONF_ENCRYPTED_REFRESH_TOKEN)
+    expiry = config.get(CONF_ACCESS_TOKEN_EXPIRY, 0)
+    client_secret = config.get(CONF_CLIENT_SECRET, "")
+    salt = config.get(CONF_TOKEN_SALT)
+    iterations = config.get(CONF_TOKEN_ITERATIONS)
+    provider = config.get(CONF_OAUTH_PROVIDER, "gmail")
+    client_id = config.get(CONF_CLIENT_ID, "")
+
+    if not encrypted_access_token or not client_secret:
+        _LOGGER.error("OAuth configuration incomplete: missing encrypted token or client_secret")
+        return None
+
+    crypto = Cryptographer(password=client_secret, salt=salt, iterations=iterations)
+
+    # If token is still valid, return it
+    if not is_token_expired(expiry):
+        try:
+            return crypto.decrypt(encrypted_access_token)
+        except Exception as err:  # pylint: disable=broad-except
+            _LOGGER.error("Failed to decrypt access token: %s", err)
+            return None
+
+    # Token is expired — try to refresh it
+    _LOGGER.debug("OAuth access token expired, attempting refresh")
+    if not encrypted_refresh_token:
+        _LOGGER.error("No refresh token available; re-authentication required")
+        return None
+
+    try:
+        refresh_token = crypto.decrypt(encrypted_refresh_token)
+    except Exception as err:  # pylint: disable=broad-except
+        _LOGGER.error("Failed to decrypt refresh token: %s", err)
+        return None
+
+    import asyncio
+
+    loop = asyncio.get_event_loop()
+    if loop.is_running():
+        # We're being called from sync context inside an async loop — run in executor
+        future = asyncio.run_coroutine_threadsafe(
+            refresh_access_token(hass, provider, client_id, client_secret, refresh_token),
+            loop,
+        )
+        try:
+            tokens = future.result(timeout=30)
+        except Exception as err:  # pylint: disable=broad-except
+            _LOGGER.error("Token refresh timed out or failed: %s", err)
+            return None
+    else:
+        tokens = loop.run_until_complete(
+            refresh_access_token(hass, provider, client_id, client_secret, refresh_token)
+        )
+
+    if not tokens:
+        _LOGGER.error("Token refresh failed; re-authentication required")
+        return None
+
+    access_token = tokens.get("access_token", "")
+    new_expiry = int(_time.time()) + int(tokens.get("expires_in", 3600))
+
+    # Update the config entry with new encrypted tokens
+    new_data = dict(config)
+    new_crypto = Cryptographer(password=client_secret, salt=salt, iterations=iterations)
+    new_data[CONF_ENCRYPTED_ACCESS_TOKEN] = new_crypto.encrypt(access_token)
+    new_data[CONF_ACCESS_TOKEN_EXPIRY] = new_expiry
+    if "refresh_token" in tokens:
+        new_data[CONF_ENCRYPTED_REFRESH_TOKEN] = new_crypto.encrypt(tokens["refresh_token"])
+
+    hass.loop.call_soon_threadsafe(
+        lambda: hass.async_create_task(
+            _update_config_entry_tokens(hass, config, new_data)
+        )
+    )
+
+    return access_token
+
+
+async def _update_config_entry_tokens(
+    hass: HomeAssistant, config: ConfigEntry, new_data: dict
+) -> None:
+    """Update config entry with refreshed OAuth tokens."""
+    # Find the config entry and update it
+    for entry in hass.config_entries.async_entries():
+        if entry.data == config or entry.options == config:
+            hass.config_entries.async_update_entry(entry, data=new_data)
+            _LOGGER.debug("Updated config entry with refreshed OAuth tokens")
+            return
+
+
 def process_emails(hass: HomeAssistant, config: ConfigEntry) -> dict:
     """Process emails and return value.
 
@@ -146,15 +267,23 @@ def process_emails(hass: HomeAssistant, config: ConfigEntry) -> dict:
     host = config.get(CONF_HOST)
     port = config.get(CONF_PORT)
     user = config.get(CONF_USERNAME)
-    pwd = config.get(CONF_PASSWORD)
     folder = config.get(CONF_FOLDER)
     resources = config.get(CONF_RESOURCES)
+    auth_method = config.get(CONF_AUTH_METHOD, AUTH_METHOD_PASSWORD)
 
     # Create the dict container
     data = {}
 
-    # Login to email server and select the folder
-    account = login(host, port, user, pwd)
+    # Determine authentication and log in
+    if auth_method == AUTH_METHOD_OAUTH:
+        access_token = _get_oauth_access_token(hass, config)
+        if not access_token:
+            _LOGGER.error("Failed to obtain OAuth access token")
+            return data
+        account = login(host, port, user, access_token=access_token)
+    else:
+        pwd = config.get(CONF_PASSWORD)
+        account = login(host, port, user, pwd=pwd)
 
     # Do not process if account returns false
     if not account:
@@ -413,11 +542,15 @@ def fetch(
 
 
 def login(
-    host: str, port: int, user: str, pwd: str
+    host: str,
+    port: int,
+    user: str,
+    pwd: Optional[str] = None,
+    access_token: Optional[str] = None,
 ) -> Union[bool, Type[imaplib.IMAP4_SSL]]:
-    """Login to IMAP server.
+    """Login to IMAP server using either password or OAuth2 XOAUTH2 token.
 
-    Returns account object
+    Returns account object or False on failure.
     """
     # Catch invalid mail server / host names
     try:
@@ -429,7 +562,11 @@ def login(
 
     # If login fails give error message
     try:
-        account.login(user, pwd)
+        if access_token:
+            auth_string = f"user={user}\x01auth=Bearer {access_token}\x01\x01"
+            account.authenticate("XOAUTH2", lambda x: auth_string)
+        else:
+            account.login(user, pwd)
     except Exception as err:
         _LOGGER.error("Error logging into IMAP Server: %s", str(err))
         return False
