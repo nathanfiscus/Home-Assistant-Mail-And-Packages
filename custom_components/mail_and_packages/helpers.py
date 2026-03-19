@@ -165,7 +165,10 @@ def _get_oauth_access_token(hass: HomeAssistant, config: ConfigEntry) -> Optiona
 
     Returns the decrypted access token or None on failure.
     """
+    import asyncio
     import time as _time
+
+    from .const import DOMAIN as _DOMAIN
     from .crypto import Cryptographer
     from .oauth_handler import is_token_expired, refresh_access_token
 
@@ -204,11 +207,9 @@ def _get_oauth_access_token(hass: HomeAssistant, config: ConfigEntry) -> Optiona
         _LOGGER.error("Failed to decrypt refresh token: %s", err)
         return None
 
-    import asyncio
-
     loop = asyncio.get_event_loop()
     if loop.is_running():
-        # We're being called from sync context inside an async loop — run in executor
+        # Called from a thread executor within a running event loop — use thread-safe bridge
         future = asyncio.run_coroutine_threadsafe(
             refresh_access_token(hass, provider, client_id, client_secret, refresh_token),
             loop,
@@ -230,7 +231,7 @@ def _get_oauth_access_token(hass: HomeAssistant, config: ConfigEntry) -> Optiona
     access_token = tokens.get("access_token", "")
     new_expiry = int(_time.time()) + int(tokens.get("expires_in", 3600))
 
-    # Update the config entry with new encrypted tokens
+    # Build updated config data with new encrypted tokens
     new_data = dict(config)
     new_crypto = Cryptographer(password=client_secret, salt=salt, iterations=iterations)
     new_data[CONF_ENCRYPTED_ACCESS_TOKEN] = new_crypto.encrypt(access_token)
@@ -238,25 +239,41 @@ def _get_oauth_access_token(hass: HomeAssistant, config: ConfigEntry) -> Optiona
     if "refresh_token" in tokens:
         new_data[CONF_ENCRYPTED_REFRESH_TOKEN] = new_crypto.encrypt(tokens["refresh_token"])
 
-    hass.loop.call_soon_threadsafe(
-        lambda: hass.async_create_task(
-            _update_config_entry_tokens(hass, config, new_data)
+    # Schedule config entry update in the event loop
+    def _log_update_error(task):
+        """Log any exception from the token update task."""
+        err = task.exception()
+        if err:
+            _LOGGER.error("Token update task failed: %s", err)
+
+    def _schedule_update():
+        task = hass.async_create_task(
+            _update_config_entry_tokens(hass, config, new_data, _DOMAIN)
         )
-    )
+        task.add_done_callback(_log_update_error)
+
+    hass.loop.call_soon_threadsafe(_schedule_update)
 
     return access_token
 
 
 async def _update_config_entry_tokens(
-    hass: HomeAssistant, config: ConfigEntry, new_data: dict
+    hass: HomeAssistant, old_data: dict, new_data: dict, domain: str
 ) -> None:
-    """Update config entry with refreshed OAuth tokens."""
-    # Find the config entry and update it
-    for entry in hass.config_entries.async_entries():
-        if entry.data == config or entry.options == config:
+    """Update config entry with refreshed OAuth tokens.
+
+    Finds the config entry by matching its stored data against old_data and
+    replaces it with new_data containing updated token fields.
+    """
+    for entry in hass.config_entries.async_entries(domain):
+        if entry.data == old_data:
             hass.config_entries.async_update_entry(entry, data=new_data)
-            _LOGGER.debug("Updated config entry with refreshed OAuth tokens")
+            _LOGGER.debug("Updated config entry %s with refreshed OAuth tokens", entry.entry_id)
             return
+    _LOGGER.warning(
+        "Could not locate config entry to update with refreshed OAuth tokens; "
+        "refreshed token will be lost after restart"
+    )
 
 
 def process_emails(hass: HomeAssistant, config: ConfigEntry) -> dict:

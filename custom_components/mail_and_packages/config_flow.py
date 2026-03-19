@@ -86,12 +86,12 @@ class MailAndPackagesOAuthCallbackView(HomeAssistantView):
 
     def __init__(self):
         """Initialize the callback view."""
-        self.token_url = ""
+        self.callback_url = ""
 
     @callback
     async def get(self, request):
         """Handle the GET request from the OAuth provider redirect."""
-        self.token_url = str(request.url)
+        self.callback_url = str(request.url)
         return web_response.Response(
             headers={"content-type": "text/html"},
             text=(
@@ -208,7 +208,7 @@ def _get_schema_step_1(user_input: list, default_dict: list) -> Any:
     if user_input is None:
         user_input = {}
 
-    def _get_default(key: str, fallback_default: Any = None) -> None:
+    def _get_default(key: str, fallback_default: Any = None) -> Any:
         """Get default value for key."""
         return user_input.get(key, default_dict.get(key, fallback_default))
 
@@ -227,7 +227,7 @@ def _get_schema_oauth(user_input: list, default_dict: list) -> Any:
     if user_input is None:
         user_input = {}
 
-    def _get_default(key: str, fallback_default: Any = None) -> None:
+    def _get_default(key: str, fallback_default: Any = None) -> Any:
         """Get default value for key."""
         return user_input.get(key, default_dict.get(key, fallback_default))
 
@@ -250,7 +250,7 @@ def _get_schema_step_2(data: list, user_input: list, default_dict: list) -> Any:
     if user_input is None:
         user_input = {}
 
-    def _get_default(key: str, fallback_default: Any = None) -> None:
+    def _get_default(key: str, fallback_default: Any = None) -> Any:
         """Get default value for key."""
         return user_input.get(key, default_dict.get(key, fallback_default))
 
@@ -312,7 +312,7 @@ def _get_schema_step_3(user_input: list, default_dict: list) -> Any:
     if user_input is None:
         user_input = {}
 
-    def _get_default(key: str, fallback_default: Any = None) -> None:
+    def _get_default(key: str, fallback_default: Any = None) -> Any:
         """Get default value for key."""
         return user_input.get(key, default_dict.get(key, fallback_default))
 

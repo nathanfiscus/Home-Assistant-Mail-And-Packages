@@ -4,7 +4,7 @@ import functools as ft
 import logging
 import time
 import urllib.parse
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 import requests
 
@@ -80,7 +80,7 @@ def build_authorization_url(
         "access_type": "offline",
         "prompt": "consent",
     }
-    query = "&".join(f"{k}={requests.utils.quote(str(v))}" for k, v in params.items())
+    query = urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
     return f"{urls['auth_url']}?{query}"
 
 
@@ -232,11 +232,11 @@ async def get_user_email(
         return None
 
 
-def is_token_expired(expiry_timestamp: int, buffer_seconds: int = 300) -> bool:
+def is_token_expired(expiry_timestamp: Union[int, float], buffer_seconds: int = 300) -> bool:
     """Return True if the access token is expired or expires within buffer_seconds.
 
     Args:
-        expiry_timestamp: Unix timestamp when token expires
+        expiry_timestamp: Unix timestamp (seconds since epoch) when token expires
         buffer_seconds: Seconds before expiry to consider token as expired (default 5 min)
 
     Returns:

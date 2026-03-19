@@ -60,7 +60,7 @@
                     "generate_mp4": "Create mp4 from images",
                     "resources": "Sensors List",
                     "imap_timeout": "Time in seconds before connection timeout (seconds, minimum 10)",
-                    "amazon_fwds": "Amazon fowarded email addresses",
+                    "amazon_fwds": "Amazon forwarded email addresses",
                     "allow_external": "Create image for notification apps",
                     "amazon_days": "Days back to check for Amazon emails",
                     "custom_img": "Use custom 'no image' image?"
@@ -108,7 +108,7 @@
                     "generate_mp4": "Create mp4 from images",
                     "resources": "Sensors List",
                     "imap_timeout": "Time in seconds before connection timeout (seconds, minimum 10)",
-                    "amazon_fwds": "Amazon fowarded email addresses",
+                    "amazon_fwds": "Amazon forwarded email addresses",
                     "allow_external": "Create image for notification apps",
                     "amazon_days": "Days back to check for Amazon emails",
                     "custom_img": "Use custom 'no image' image?"
