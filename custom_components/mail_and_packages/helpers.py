@@ -85,9 +85,9 @@ from .const import (
     ATTR_UPS_IMAGE,
     ATTR_USPS_MAIL,
     ATTR_WALMART_IMAGE,
+    AUTH_METHOD_OAUTH,
     CAMERA_DATA,
     CAMERA_EXTRACTION_CONFIG,
-    AUTH_METHOD_OAUTH,
     CONF_ACCESS_TOKEN_EXPIRY,
     CONF_ALLOW_EXTERNAL,
     CONF_AMAZON_CUSTOM_IMG,
@@ -265,8 +265,11 @@ async def _resolve_oauth_access_token(
         return None
 
     try:
-        cryptographer = Cryptographer.from_salt_hex(client_secret, salt_hex)
-    except (ValueError, Exception) as err:  # noqa: BLE001
+        # PBKDF2 key derivation is CPU-intensive – run in executor thread
+        cryptographer = await hass.async_add_executor_job(
+            Cryptographer.from_salt_hex, client_secret, salt_hex
+        )
+    except Exception as err:  # noqa: BLE001
         _LOGGER.error("Failed to initialize cryptographer: %s", err)
         return None
 
@@ -279,12 +282,15 @@ async def _resolve_oauth_access_token(
         return None
 
     if is_token_expired(expires_at):
-        _LOGGER.debug("OAuth access token expired, refreshing…")
+        _LOGGER.debug("OAuth access token expired, refreshing...")
         if not encrypted_refresh:
             _LOGGER.error("OAuth refresh token missing – cannot refresh access token")
             return None
         try:
-            refresh_token = cryptographer.decrypt(encrypted_refresh)
+            # Fernet decryption is CPU-bound – run in executor thread
+            refresh_token = await hass.async_add_executor_job(
+                cryptographer.decrypt, encrypted_refresh
+            )
         except Exception as err:  # noqa: BLE001
             _LOGGER.error("Failed to decrypt refresh token: %s", err)
             return None
@@ -304,17 +310,23 @@ async def _resolve_oauth_access_token(
         new_expires_at = token_data["expires_at"]
 
         # Update the in-memory config dict so the coordinator has the latest values
-        config[CONF_ENCRYPTED_ACCESS_TOKEN] = cryptographer.encrypt(new_access_token)
+        # Fernet encryption is CPU-bound – run in executor thread
+        config[CONF_ENCRYPTED_ACCESS_TOKEN] = await hass.async_add_executor_job(
+            cryptographer.encrypt, new_access_token
+        )
         config[CONF_ACCESS_TOKEN_EXPIRY] = new_expires_at
         if "refresh_token" in token_data:
-            config[CONF_ENCRYPTED_REFRESH_TOKEN] = cryptographer.encrypt(
-                token_data["refresh_token"]
+            config[CONF_ENCRYPTED_REFRESH_TOKEN] = await hass.async_add_executor_job(
+                cryptographer.encrypt, token_data["refresh_token"]
             )
 
         return new_access_token
 
     try:
-        return cryptographer.decrypt(encrypted_access)
+        # Fernet decryption is CPU-bound – run in executor thread
+        return await hass.async_add_executor_job(
+            cryptographer.decrypt, encrypted_access
+        )
     except Exception as err:  # noqa: BLE001
         _LOGGER.error("Failed to decrypt access token: %s", err)
         return None
@@ -351,7 +363,9 @@ async def process_emails(hass: HomeAssistant, config: ConfigEntry) -> dict:  # n
 
     # Login to email server and select the folder
     _LOGGER.debug("Attempting to log in to IMAP server.")
-    account = await login(hass, host, port, user, pwd, imap_security, verify_ssl, access_token)
+    account = await login(
+        hass, host, port, user, pwd, imap_security, verify_ssl, access_token
+    )
 
     # Do not process if account returns false
     if not account:

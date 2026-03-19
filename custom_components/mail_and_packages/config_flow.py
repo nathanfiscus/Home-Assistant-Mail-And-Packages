@@ -18,7 +18,7 @@ from homeassistant.const import (
     CONF_RESOURCES,
     CONF_USERNAME,
 )
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 
 from .const import (
     AUTH_METHOD_OAUTH,
@@ -128,7 +128,7 @@ class OAuthCallbackView(HomeAssistantView):
 
     async def get(self, request):  # type: ignore[override]
         """Handle the OAuth callback GET request."""
-        from aiohttp.web import HTTPFound, Response  # noqa: PLC0415
+        from aiohttp.web import Response  # noqa: PLC0415
 
         state = request.query.get("state")
         code = request.query.get("code")
@@ -162,7 +162,7 @@ class OAuthCallbackView(HomeAssistantView):
 
 
 def _get_schema_auth_method(user_input: dict | None, default_dict: dict) -> vol.Schema:
-    """Schema for auth method selection step."""
+    """Return a schema for the auth method selection step."""
     if user_input is None:
         user_input = {}
 
@@ -182,7 +182,7 @@ def _get_schema_auth_method(user_input: dict | None, default_dict: dict) -> vol.
 def _get_schema_oauth_credentials(
     user_input: dict | None, default_dict: dict
 ) -> vol.Schema:
-    """Schema for OAuth credentials step."""
+    """Return a schema for the OAuth credentials step."""
     if user_input is None:
         user_input = {}
 
@@ -204,9 +204,7 @@ def _get_schema_oauth_credentials(
                 default=_get_default(CONF_CLIENT_SECRET, ""),
             ): cv.string,
             vol.Required(CONF_HOST, default=_get_default(CONF_HOST, "")): cv.string,
-            vol.Required(
-                CONF_PORT, default=_get_default(CONF_PORT, 993)
-            ): cv.port,
+            vol.Required(CONF_PORT, default=_get_default(CONF_PORT, 993)): cv.port,
             vol.Required(
                 CONF_IMAP_SECURITY, default=_get_default(CONF_IMAP_SECURITY, "SSL")
             ): vol.In(IMAP_SECURITY),
@@ -397,7 +395,9 @@ async def _get_mailboxes(
     """Get list of mailbox folders from mail server."""
     _LOGGER.debug("Getting mailboxes, login...")
     try:
-        account = await login(hass, host, port, user, pwd, security, verify, access_token)
+        account = await login(
+            hass, host, port, user, pwd, security, verify, access_token
+        )
 
     except (TimeoutError, AioImapException, ConnectionRefusedError) as err:
         _LOGGER.error("Unable to connect: %s", err)
@@ -457,8 +457,12 @@ def _get_schema_step_1(user_input: list, default_dict: list) -> Any:
             ),
             vol.Optional(CONF_HOST, default=_get_default(CONF_HOST, "")): cv.string,
             vol.Optional(CONF_PORT, default=_get_default(CONF_PORT, 993)): cv.port,
-            vol.Optional(CONF_USERNAME, default=_get_default(CONF_USERNAME, "")): cv.string,
-            vol.Optional(CONF_PASSWORD, default=_get_default(CONF_PASSWORD, "")): cv.string,
+            vol.Optional(
+                CONF_USERNAME, default=_get_default(CONF_USERNAME, "")
+            ): cv.string,
+            vol.Optional(
+                CONF_PASSWORD, default=_get_default(CONF_PASSWORD, "")
+            ): cv.string,
             vol.Optional(
                 CONF_IMAP_SECURITY, default=_get_default(CONF_IMAP_SECURITY, "SSL")
             ): vol.In(IMAP_SECURITY),
@@ -864,7 +868,7 @@ class MailAndPackagesFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         # Wait for the callback (up to 5 minutes)
         try:
             result = await asyncio.wait_for(future, timeout=300)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             _OAUTH_FLOW_CALLBACKS.pop(state, None)
             self._errors["base"] = "oauth_timeout"
             return self.async_show_form(
@@ -910,20 +914,24 @@ class MailAndPackagesFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 errors=self._errors,
             )
 
-        # Encrypt tokens
+        # Encrypt tokens – PBKDF2 key derivation and Fernet are CPU-bound, use executor
         from .crypto import Cryptographer  # noqa: PLC0415
 
-        crypto = Cryptographer(client_secret)
+        crypto = await self.hass.async_add_executor_job(Cryptographer, client_secret)
         self._data[CONF_USER_EMAIL] = user_email
-        self._data[CONF_ENCRYPTED_ACCESS_TOKEN] = crypto.encrypt(
-            token_data["access_token"]
+        self._data[
+            CONF_ENCRYPTED_ACCESS_TOKEN
+        ] = await self.hass.async_add_executor_job(
+            crypto.encrypt, token_data["access_token"]
         )
         self._data[CONF_TOKEN_SALT] = crypto.salt_hex
         self._data[CONF_ACCESS_TOKEN_EXPIRY] = token_data["expires_at"]
 
         if "refresh_token" in token_data:
-            self._data[CONF_ENCRYPTED_REFRESH_TOKEN] = crypto.encrypt(
-                token_data["refresh_token"]
+            self._data[
+                CONF_ENCRYPTED_REFRESH_TOKEN
+            ] = await self.hass.async_add_executor_job(
+                crypto.encrypt, token_data["refresh_token"]
             )
 
         # Do NOT store the plain-text access token – it lives only in memory
@@ -933,10 +941,7 @@ class MailAndPackagesFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
     def _build_redirect_uri(self) -> str:
         """Build the OAuth callback redirect URI for this HA instance."""
         # Prefer the external URL if configured; fall back to internal URL
-        base_url = (
-            self.hass.config.external_url
-            or self.hass.config.internal_url
-        )
+        base_url = self.hass.config.external_url or self.hass.config.internal_url
         if not base_url:
             raise RuntimeError(
                 "No external or internal URL configured for Home Assistant"

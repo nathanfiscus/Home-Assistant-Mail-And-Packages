@@ -94,17 +94,15 @@ async def exchange_code_for_token(
         "redirect_uri": redirect_uri,
     }
 
-    async with aiohttp.ClientSession() as session:
-        async with session.post(token_url, data=payload) as resp:
-            if resp.status != 200:
-                text = await resp.text()
-                _LOGGER.error(
-                    "Token exchange failed (HTTP %s): %s", resp.status, text
-                )
-                raise ValueError(
-                    f"Token exchange failed with status {resp.status}: {text}"
-                )
-            token_data: dict[str, Any] = await resp.json()
+    async with (
+        aiohttp.ClientSession() as session,
+        session.post(token_url, data=payload) as resp,
+    ):
+        if resp.status != 200:
+            text = await resp.text()
+            _LOGGER.error("Token exchange failed (HTTP %s): %s", resp.status, text)
+            raise ValueError(f"Token exchange failed with status {resp.status}: {text}")
+        token_data: dict[str, Any] = await resp.json()
 
     if "error" in token_data:
         _LOGGER.error("Token exchange error: %s", token_data)
@@ -153,17 +151,15 @@ async def refresh_access_token(
         "refresh_token": refresh_token,
     }
 
-    async with aiohttp.ClientSession() as session:
-        async with session.post(token_url, data=payload) as resp:
-            if resp.status != 200:
-                text = await resp.text()
-                _LOGGER.error(
-                    "Token refresh failed (HTTP %s): %s", resp.status, text
-                )
-                raise ValueError(
-                    f"Token refresh failed with status {resp.status}: {text}"
-                )
-            token_data: dict[str, Any] = await resp.json()
+    async with (
+        aiohttp.ClientSession() as session,
+        session.post(token_url, data=payload) as resp,
+    ):
+        if resp.status != 200:
+            text = await resp.text()
+            _LOGGER.error("Token refresh failed (HTTP %s): %s", resp.status, text)
+            raise ValueError(f"Token refresh failed with status {resp.status}: {text}")
+        token_data: dict[str, Any] = await resp.json()
 
     if "error" in token_data:
         _LOGGER.error("Token refresh error: %s", token_data)
@@ -198,26 +194,24 @@ async def get_user_email(provider: str, access_token: str) -> str:
     userinfo_url = provider_cfg["userinfo_url"]
     headers = {"Authorization": f"Bearer {access_token}"}
 
-    async with aiohttp.ClientSession() as session:
-        async with session.get(userinfo_url, headers=headers) as resp:
-            if resp.status != 200:
-                text = await resp.text()
-                _LOGGER.error(
-                    "User-info request failed (HTTP %s): %s", resp.status, text
-                )
-                raise ValueError(
-                    f"User-info request failed with status {resp.status}: {text}"
-                )
-            data: dict[str, Any] = await resp.json()
+    async with (
+        aiohttp.ClientSession() as session,
+        session.get(userinfo_url, headers=headers) as resp,
+    ):
+        if resp.status != 200:
+            text = await resp.text()
+            _LOGGER.error("User-info request failed (HTTP %s): %s", resp.status, text)
+            raise ValueError(
+                f"User-info request failed with status {resp.status}: {text}"
+            )
+        data: dict[str, Any] = await resp.json()
 
     # Gmail returns {"email": "..."}, Outlook returns {"mail": "..." or "userPrincipalName": "..."}
-    email = (
-        data.get("email")
-        or data.get("mail")
-        or data.get("userPrincipalName")
-    )
+    email = data.get("email") or data.get("mail") or data.get("userPrincipalName")
     if not email:
-        raise ValueError(f"Could not determine user email from provider response: {data}")
+        raise ValueError(
+            f"Could not determine user email from provider response: {data}"
+        )
 
     return email
 

@@ -54,6 +54,6 @@ class Cryptographer:
         return self.salt.hex()
 
     @classmethod
-    def from_salt_hex(cls, password: str, salt_hex: str) -> "Cryptographer":
+    def from_salt_hex(cls, password: str, salt_hex: str) -> Cryptographer:
         """Reconstruct a Cryptographer from a stored hex salt."""
         return cls(password, bytes.fromhex(salt_hex))
