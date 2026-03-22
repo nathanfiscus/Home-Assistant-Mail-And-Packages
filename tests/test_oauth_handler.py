@@ -132,10 +132,13 @@ class TestExchangeCodeForToken:
         mock_resp = _make_mock_response(400, text="Bad Request")
         mock_session = _make_mock_session(post_cm=mock_resp)
 
-        with patch(
-            "custom_components.mail_and_packages.oauth_handler.aiohttp.ClientSession",
-            new=mock_session,
-        ), pytest.raises(ValueError, match="Token exchange failed with status"):
+        with (
+            patch(
+                "custom_components.mail_and_packages.oauth_handler.aiohttp.ClientSession",
+                new=mock_session,
+            ),
+            pytest.raises(ValueError, match="Token exchange failed with status"),
+        ):
             await exchange_code_for_token(
                 provider="gmail",
                 client_id="cid",
@@ -154,10 +157,13 @@ class TestExchangeCodeForToken:
         mock_resp = _make_mock_response(200, payload=error_payload)
         mock_session = _make_mock_session(post_cm=mock_resp)
 
-        with patch(
-            "custom_components.mail_and_packages.oauth_handler.aiohttp.ClientSession",
-            new=mock_session,
-        ), pytest.raises(ValueError, match="Code has been used already"):
+        with (
+            patch(
+                "custom_components.mail_and_packages.oauth_handler.aiohttp.ClientSession",
+                new=mock_session,
+            ),
+            pytest.raises(ValueError, match="Code has been used already"),
+        ):
             await exchange_code_for_token(
                 provider="gmail",
                 client_id="cid",
@@ -242,10 +248,13 @@ class TestRefreshAccessToken:
         mock_resp = _make_mock_response(401, text="Unauthorized")
         mock_session = _make_mock_session(post_cm=mock_resp)
 
-        with patch(
-            "custom_components.mail_and_packages.oauth_handler.aiohttp.ClientSession",
-            new=mock_session,
-        ), pytest.raises(ValueError, match="Token refresh failed with status"):
+        with (
+            patch(
+                "custom_components.mail_and_packages.oauth_handler.aiohttp.ClientSession",
+                new=mock_session,
+            ),
+            pytest.raises(ValueError, match="Token refresh failed with status"),
+        ):
             await refresh_access_token(
                 provider="gmail",
                 client_id="cid",
@@ -263,10 +272,13 @@ class TestRefreshAccessToken:
         mock_resp = _make_mock_response(200, payload=error_payload)
         mock_session = _make_mock_session(post_cm=mock_resp)
 
-        with patch(
-            "custom_components.mail_and_packages.oauth_handler.aiohttp.ClientSession",
-            new=mock_session,
-        ), pytest.raises(ValueError, match="Token has been revoked"):
+        with (
+            patch(
+                "custom_components.mail_and_packages.oauth_handler.aiohttp.ClientSession",
+                new=mock_session,
+            ),
+            pytest.raises(ValueError, match="Token has been revoked"),
+        ):
             await refresh_access_token(
                 provider="gmail",
                 client_id="cid",
@@ -348,10 +360,13 @@ class TestGetUserEmail:
         mock_resp = _make_mock_response(401, text="Unauthorized")
         mock_session = _make_mock_session(get_cm=mock_resp)
 
-        with patch(
-            "custom_components.mail_and_packages.oauth_handler.aiohttp.ClientSession",
-            new=mock_session,
-        ), pytest.raises(ValueError, match="User-info request failed with status"):
+        with (
+            patch(
+                "custom_components.mail_and_packages.oauth_handler.aiohttp.ClientSession",
+                new=mock_session,
+            ),
+            pytest.raises(ValueError, match="User-info request failed with status"),
+        ):
             await get_user_email("gmail", "BAD_TOKEN")
 
     @pytest.mark.asyncio
@@ -362,10 +377,13 @@ class TestGetUserEmail:
         )
         mock_session = _make_mock_session(get_cm=mock_resp)
 
-        with patch(
-            "custom_components.mail_and_packages.oauth_handler.aiohttp.ClientSession",
-            new=mock_session,
-        ), pytest.raises(ValueError, match="Could not determine user email"):
+        with (
+            patch(
+                "custom_components.mail_and_packages.oauth_handler.aiohttp.ClientSession",
+                new=mock_session,
+            ),
+            pytest.raises(ValueError, match="Could not determine user email"),
+        ):
             await get_user_email("gmail", "ACCESS_TOKEN")
 
     @pytest.mark.asyncio
