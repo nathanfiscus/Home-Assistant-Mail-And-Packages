@@ -6,7 +6,7 @@
     "@firstof9"
   ],
   "config_flow": true,
-  "dependencies": [],
+  "dependencies": ["http"],
   "documentation": "https://github.com/moralmunky/Home-Assistant-Mail-And-Packages",
   "integration_type": "service",
   "iot_class": "cloud_polling",
@@ -15,7 +15,8 @@
     "beautifulsoup4",
     "Pillow>=9.0",
     "dateparser",
-    "aioimaplib"
+    "aioimaplib",
+    "cryptography"
   ],
   "version": "0.0.0-dev"
 }

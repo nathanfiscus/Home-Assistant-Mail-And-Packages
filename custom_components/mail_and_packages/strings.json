@@ -14,10 +14,22 @@
       "missing_forwarded_emails": "Missing forwarded email addresses. You may enter '(none)' to clear this setting.",
       "path_not_found": "Directory not found",
       "invalid_auth": "Invalid authentication details. Please check your username and password.",
-      "ssl_error": "An SSL error occurred. Change SSL cipher list and try again."
+      "ssl_error": "An SSL error occurred. Change SSL cipher list and try again.",
+      "oauth_timeout": "OAuth authorization timed out. Please try again.",
+      "oauth_error": "OAuth authorization failed. The provider returned an error.",
+      "oauth_token_error": "Failed to exchange OAuth authorization code for tokens. Check your client ID and secret.",
+      "oauth_user_info_error": "Failed to retrieve user information from the OAuth provider.",
+      "required": "This field is required."
     },
     "step": {
       "user": {
+        "description": "Choose how to authenticate with your mail server.",
+        "data": {
+          "auth_method": "Authentication Method"
+        },
+        "title": "Mail and Packages – Authentication"
+      },
+      "password": {
         "description": "Please enter the connection information of your mail server.",
         "data": {
           "host": "Host",
@@ -27,7 +39,20 @@
           "verify_ssl": "Verify SSL Cert",
           "imap_security": "IMAP Security"
         },
-        "title": "Mail and Packages (Step 1 of 2)"
+        "title": "Mail and Packages – IMAP Connection"
+      },
+      "oauth_credentials": {
+        "description": "Enter your OAuth2 application credentials.\n\nFor **Gmail**: create a project in Google Cloud Console, enable the Gmail API, and create OAuth2 credentials.\nFor **Outlook**: register an application in Azure Active Directory.\n\nEnter the IMAP server host and port for your provider.",
+        "data": {
+          "provider": "OAuth Provider",
+          "client_id": "Client ID",
+          "client_secret": "Client Secret",
+          "host": "IMAP Host",
+          "port": "IMAP Port",
+          "imap_security": "IMAP Security",
+          "verify_ssl": "Verify SSL Cert"
+        },
+        "title": "Mail and Packages – OAuth Credentials"
       },
       "config_2": {
         "data": {

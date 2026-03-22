@@ -85,17 +85,24 @@ from .const import (
     ATTR_UPS_IMAGE,
     ATTR_USPS_MAIL,
     ATTR_WALMART_IMAGE,
+    AUTH_METHOD_OAUTH,
     CAMERA_DATA,
     CAMERA_EXTRACTION_CONFIG,
+    CONF_ACCESS_TOKEN_EXPIRY,
     CONF_ALLOW_EXTERNAL,
     CONF_AMAZON_CUSTOM_IMG,
     CONF_AMAZON_CUSTOM_IMG_FILE,
     CONF_AMAZON_DAYS,
     CONF_AMAZON_DOMAIN,
     CONF_AMAZON_FWDS,
+    CONF_AUTH_METHOD,
+    CONF_CLIENT_ID,
+    CONF_CLIENT_SECRET,
     CONF_CUSTOM_IMG,
     CONF_CUSTOM_IMG_FILE,
     CONF_DURATION,
+    CONF_ENCRYPTED_ACCESS_TOKEN,
+    CONF_ENCRYPTED_REFRESH_TOKEN,
     CONF_FEDEX_CUSTOM_IMG,
     CONF_FEDEX_CUSTOM_IMG_FILE,
     CONF_FOLDER,
@@ -103,9 +110,12 @@ from .const import (
     CONF_GENERATE_GRID,
     CONF_GENERATE_MP4,
     CONF_IMAP_SECURITY,
+    CONF_OAUTH_PROVIDER,
     CONF_STORAGE,
+    CONF_TOKEN_SALT,
     CONF_UPS_CUSTOM_IMG,
     CONF_UPS_CUSTOM_IMG_FILE,
+    CONF_USER_EMAIL,
     CONF_VERIFY_SSL,
     CONF_WALMART_CUSTOM_IMG,
     CONF_WALMART_CUSTOM_IMG_FILE,
@@ -165,8 +175,14 @@ async def login(
     pwd: str,
     security: str,
     verify: bool = True,
+    access_token: str | None = None,
 ) -> IMAP4_SSL | IMAP4:
-    """Login to IMAP server asynchronously."""
+    """Login to IMAP server asynchronously.
+
+    When *access_token* is supplied the connection uses XOAUTH2 (Bearer token)
+    instead of the traditional username/password authentication.  The *pwd*
+    parameter is ignored in that case.
+    """
     ssl_context = (
         ssl.client_context(ssl.SSLCipherList.PYTHON_DEFAULT)
         if verify
@@ -180,11 +196,21 @@ async def login(
     await account.wait_hello_from_server()
 
     if account.protocol.state == NONAUTH:
-        try:
-            await account.login(user, pwd)
-        except (AioImapException, OSError) as err:
-            _LOGGER.error("Error logging in to IMAP Server: %s", err)
-            raise InvalidAuth from err
+        if access_token is not None:
+            try:
+                response = await account.xoauth2(user, access_token)
+                if response.result != "OK":
+                    _LOGGER.error("XOAUTH2 login failed: %s", response)
+                    raise InvalidAuth
+            except (AioImapException, OSError) as err:
+                _LOGGER.error("Error logging in to IMAP Server via XOAUTH2: %s", err)
+                raise InvalidAuth from err
+        else:
+            try:
+                await account.login(user, pwd)
+            except (AioImapException, OSError) as err:
+                _LOGGER.error("Error logging in to IMAP Server: %s", err)
+                raise InvalidAuth from err
 
     if account.protocol.state not in {AUTH, SELECTED}:
         _LOGGER.error("Error logging in to IMAP Server")
@@ -214,6 +240,98 @@ def default_image_path(
     return "custom_components/mail_and_packages/images/"
 
 
+async def _resolve_oauth_access_token(
+    hass: HomeAssistant,
+    config: dict,
+) -> str | None:
+    """Decrypt and, if necessary, refresh the OAuth access token.
+
+    When the stored token has expired (or is within 5 minutes of expiry) a new
+    one is fetched using the refresh token.  The caller is responsible for
+    persisting the updated config-entry data when a refresh occurs (this
+    function only operates on the *config* dict in memory).
+
+    Returns the decrypted access token string, or ``None`` on failure.
+    """
+    # Lazy import to avoid circular dependency
+    from .crypto import Cryptographer  # noqa: PLC0415
+    from .oauth_handler import is_token_expired, refresh_access_token  # noqa: PLC0415
+
+    client_secret = config.get(CONF_CLIENT_SECRET, "")
+    salt_hex = config.get(CONF_TOKEN_SALT, "")
+
+    if not salt_hex:
+        _LOGGER.error("OAuth token salt missing from config")
+        return None
+
+    try:
+        # PBKDF2 key derivation is CPU-intensive – run in executor thread
+        cryptographer = await hass.async_add_executor_job(
+            Cryptographer.from_salt_hex, client_secret, salt_hex
+        )
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.error("Failed to initialize cryptographer: %s", err)
+        return None
+
+    encrypted_access = config.get(CONF_ENCRYPTED_ACCESS_TOKEN, "")
+    encrypted_refresh = config.get(CONF_ENCRYPTED_REFRESH_TOKEN, "")
+    expires_at = config.get(CONF_ACCESS_TOKEN_EXPIRY, 0)
+
+    if not encrypted_access:
+        _LOGGER.error("OAuth access token missing from config")
+        return None
+
+    if is_token_expired(expires_at):
+        _LOGGER.debug("OAuth access token expired, refreshing...")
+        if not encrypted_refresh:
+            _LOGGER.error("OAuth refresh token missing – cannot refresh access token")
+            return None
+        try:
+            # Fernet decryption is CPU-bound – run in executor thread
+            refresh_token = await hass.async_add_executor_job(
+                cryptographer.decrypt, encrypted_refresh
+            )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.error("Failed to decrypt refresh token: %s", err)
+            return None
+
+        provider = config.get(CONF_OAUTH_PROVIDER, "")
+        client_id = config.get(CONF_CLIENT_ID, "")
+
+        try:
+            token_data = await refresh_access_token(
+                provider, client_id, client_secret, refresh_token
+            )
+        except ValueError as err:
+            _LOGGER.error("Token refresh failed: %s", err)
+            return None
+
+        new_access_token = token_data["access_token"]
+        new_expires_at = token_data["expires_at"]
+
+        # Update the in-memory config dict so the coordinator has the latest values
+        # Fernet encryption is CPU-bound – run in executor thread
+        config[CONF_ENCRYPTED_ACCESS_TOKEN] = await hass.async_add_executor_job(
+            cryptographer.encrypt, new_access_token
+        )
+        config[CONF_ACCESS_TOKEN_EXPIRY] = new_expires_at
+        if "refresh_token" in token_data:
+            config[CONF_ENCRYPTED_REFRESH_TOKEN] = await hass.async_add_executor_job(
+                cryptographer.encrypt, token_data["refresh_token"]
+            )
+
+        return new_access_token
+
+    try:
+        # Fernet decryption is CPU-bound – run in executor thread
+        return await hass.async_add_executor_job(
+            cryptographer.decrypt, encrypted_access
+        )
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.error("Failed to decrypt access token: %s", err)
+        return None
+
+
 async def process_emails(hass: HomeAssistant, config: ConfigEntry) -> dict:  # noqa: C901
     """Process emails and return value.
 
@@ -230,12 +348,24 @@ async def process_emails(hass: HomeAssistant, config: ConfigEntry) -> dict:  # n
     verify_ssl = config.get(CONF_VERIFY_SSL)
     generate_grid = config.get(CONF_GENERATE_GRID)
 
+    # Resolve access token for OAuth authentication
+    access_token: str | None = None
+    if config.get(CONF_AUTH_METHOD) == AUTH_METHOD_OAUTH:
+        access_token = await _resolve_oauth_access_token(hass, config)
+        if access_token is None:
+            _LOGGER.error("Failed to obtain a valid OAuth access token")
+            return {}
+        # For OAuth the IMAP host/port/user come from the stored OAuth config
+        user = config.get(CONF_USER_EMAIL, user)
+
     # Create the dict container
     data = {}
 
     # Login to email server and select the folder
     _LOGGER.debug("Attempting to log in to IMAP server.")
-    account = await login(hass, host, port, user, pwd, imap_security, verify_ssl)
+    account = await login(
+        hass, host, port, user, pwd, imap_security, verify_ssl, access_token
+    )
 
     # Do not process if account returns false
     if not account:
